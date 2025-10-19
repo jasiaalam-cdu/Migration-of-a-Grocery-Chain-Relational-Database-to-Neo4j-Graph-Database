@@ -1,0 +1,166 @@
+/* ------------------------------
+   0) Clear (if needed) — optional
+   ------------------------------ */
+MATCH (n) DETACH DELETE n;
+
+/* ------------------------------
+   1) Constraints / indexes
+   ------------------------------ */
+CREATE CONSTRAINT supplier_id IF NOT EXISTS FOR (s:Supplier) REQUIRE s.SupplierID IS UNIQUE;
+CREATE CONSTRAINT product_id IF NOT EXISTS FOR (p:Product) REQUIRE p.ProductID IS UNIQUE;
+CREATE CONSTRAINT category_id IF NOT EXISTS FOR (c:Category) REQUIRE c.CategoryID IS UNIQUE;
+CREATE CONSTRAINT store_id IF NOT EXISTS FOR (st:Store) REQUIRE st.StoreID IS UNIQUE;
+CREATE CONSTRAINT po_id IF NOT EXISTS FOR (po:PurchaseOrder) REQUIRE po.POID IS UNIQUE;
+CREATE CONSTRAINT delivery_id IF NOT EXISTS FOR (d:Delivery) REQUIRE d.DeliveryID IS UNIQUE;
+CREATE CONSTRAINT invoice_id IF NOT EXISTS FOR (i:Invoice) REQUIRE i.InvoiceID IS UNIQUE;
+CREATE CONSTRAINT payment_id IF NOT EXISTS FOR (pm:Payment) REQUIRE pm.PaymentID IS UNIQUE;
+
+/* ------------------------------
+   2) Load nodes
+   ------------------------------ */
+
+/* Suppliers */
+LOAD CSV WITH HEADERS FROM 'file:///suppliers.csv' AS row
+MERGE (s:Supplier {SupplierID: toInteger(row.SupplierID)})
+SET s.name = row.Name,
+    s.abn = row.ABN,
+    s.contactName = row.ContactName,
+    s.phone = row.Phone,
+    s.email = row.Email,
+    s.contractTerms = row.ContractTerms,
+    s.active = CASE row.Active WHEN '' THEN null ELSE toInteger(row.Active) END;
+
+/* Categories */
+LOAD CSV WITH HEADERS FROM 'file:///categories.csv' AS row
+MERGE (c:Category {CategoryID: toInteger(row.CategoryID)})
+SET c.name = row.Name,
+    c.parentCategoryID = CASE row.ParentCategoryID WHEN '' THEN null ELSE toInteger(row.ParentCategoryID) END;
+
+/* Stores */
+LOAD CSV WITH HEADERS FROM 'file:///stores.csv' AS row
+MERGE (st:Store {StoreID: toInteger(row.StoreID)})
+SET st.name = row.Name,
+    st.location = row.Location;
+
+/* Products */
+LOAD CSV WITH HEADERS FROM 'file:///products.csv' AS row
+MERGE (p:Product {ProductID: toInteger(row.ProductID)})
+SET p.sku = row.SKU,
+    p.name = row.Name,
+    p.CategoryID = toInteger(row.CategoryID),
+    p.DefaultSupplierID = CASE row.DefaultSupplierID WHEN '' THEN null ELSE toInteger(row.DefaultSupplierID) END,
+    p.costPrice = toFloat(row.CostPrice),
+    p.retailPrice = toFloat(row.RetailPrice),
+    p.unit = row.Unit,
+    p.isPerishable = CASE row.IsPerishable WHEN '' THEN null ELSE toInteger(row.IsPerishable) END,
+    p.reorderThreshold = CASE row.ReorderThreshold WHEN '' THEN null ELSE toInteger(row.ReorderThreshold) END;
+
+/* PurchaseOrders */
+LOAD CSV WITH HEADERS FROM 'file:///purchaseorders.csv' AS row
+MERGE (po:PurchaseOrder {POID: toInteger(row.POID)})
+SET po.orderDate = row.OrderDate,
+    po.expectedDate = row.ExpectedDate,
+    po.status = row.Status,
+    po.totalAmount = CASE row.TotalAmount WHEN '' THEN 0.0 ELSE toFloat(row.TotalAmount) END;
+
+/* Deliveries */
+LOAD CSV WITH HEADERS FROM 'file:///deliveries.csv' AS row
+MERGE (d:Delivery {DeliveryID: toInteger(row.DeliveryID)})
+SET d.deliveryDate = row.DeliveryDate,
+    d.status = row.Status,
+    d.notes = row.Notes;
+
+/* Invoices */
+LOAD CSV WITH HEADERS FROM 'file:///invoices.csv' AS row
+MERGE (inv:Invoice {InvoiceID: toInteger(row.InvoiceID)})
+SET inv.invoiceNumber = row.InvoiceNumber,
+    inv.invoiceDate = row.InvoiceDate,
+    inv.dueDate = row.DueDate,
+    inv.amount = toFloat(row.Amount),
+    inv.status = row.Status;
+
+/* Payments */
+LOAD CSV WITH HEADERS FROM 'file:///payments.csv' AS row
+MERGE (pm:Payment {PaymentID: toInteger(row.PaymentID)})
+SET pm.paymentDate = row.PaymentDate,
+    pm.method = row.Method,
+    pm.amount = toFloat(row.Amount),
+    pm.confirmationNumber = row.ConfirmationNumber;
+
+/* ------------------------------
+   3) Create relationships
+   ------------------------------ */
+
+/* Product -> Category */
+LOAD CSV WITH HEADERS FROM 'file:///products.csv' AS row
+MATCH (p:Product {ProductID: toInteger(row.ProductID)}), (c:Category {CategoryID: toInteger(row.CategoryID)})
+MERGE (p)-[:IN_CATEGORY]->(c);
+
+/* Supplier -[:SUPPLIES]-> Product (supplierproduct.csv) */
+LOAD CSV WITH HEADERS FROM 'file:///supplierproduct.csv' AS row
+MATCH (s:Supplier {SupplierID: toInteger(row.SupplierID)}), (p:Product {ProductID: toInteger(row.ProductID)})
+MERGE (s)-[r:SUPPLIES]->(p)
+SET r.supplierSKU = row.SupplierSKU,
+    r.leadTimeDays = CASE row.LeadTimeDays WHEN '' THEN null ELSE toInteger(row.LeadTimeDays) END,
+    r.unitCost = CASE row.UnitCost WHEN '' THEN null ELSE toFloat(row.UnitCost) END;
+
+/* Store HAS_STOCK -> Product (stocklevels.csv) */
+LOAD CSV WITH HEADERS FROM 'file:///stocklevels.csv' AS row
+MATCH (st:Store {StoreID: toInteger(row.StoreID)}), (p:Product {ProductID: toInteger(row.ProductID)})
+MERGE (st)-[r:HAS_STOCK]->(p)
+SET r.quantity = CASE row.Quantity WHEN '' THEN 0 ELSE toInteger(row.Quantity) END,
+    r.reorderThreshold = CASE row.ReorderThreshold WHEN '' THEN null ELSE toInteger(row.ReorderThreshold) END;
+
+/* PurchaseOrder -> Supplier and Store (purchaseorders.csv) */
+LOAD CSV WITH HEADERS FROM 'file:///purchaseorders.csv' AS row
+MATCH (po:PurchaseOrder {POID: toInteger(row.POID)})
+OPTIONAL MATCH (s:Supplier {SupplierID: CASE row.SupplierID WHEN '' THEN null ELSE toInteger(row.SupplierID) END})
+OPTIONAL MATCH (st:Store {StoreID: CASE row.StoreID WHEN '' THEN null ELSE toInteger(row.StoreID) END})
+FOREACH (_ IN CASE WHEN s IS NULL THEN [] ELSE [1] END |
+  MERGE (po)-[:FROM_SUPPLIER]->(s)
+)
+FOREACH (_ IN CASE WHEN st IS NULL THEN [] ELSE [1] END |
+  MERGE (po)-[:TO_STORE]->(st)
+);
+
+/* PurchaseOrderItem: PO -> Product with props */
+LOAD CSV WITH HEADERS FROM 'file:///purchaseorderitems.csv' AS row
+MATCH (po:PurchaseOrder {POID: toInteger(row.POID)}), (p:Product {ProductID: toInteger(row.ProductID)})
+MERGE (po)-[r:CONTAINS]->(p)
+SET r.orderedQty = toInteger(row.OrderedQty),
+    r.unitCost = toFloat(row.UnitCost);
+
+/* Delivery -> PurchaseOrder and Delivery Items (deliveryitems.csv) */
+LOAD CSV WITH HEADERS FROM 'file:///deliveries.csv' AS row
+MATCH (d:Delivery {DeliveryID: toInteger(row.DeliveryID)}), (po:PurchaseOrder {POID: toInteger(row.POID)})
+MERGE (d)-[:FOR_PO]->(po);
+
+LOAD CSV WITH HEADERS FROM 'file:///deliveryitems.csv' AS row
+MATCH (d:Delivery {DeliveryID: toInteger(row.DeliveryID)}), (p:Product {ProductID: toInteger(row.ProductID)})
+MERGE (d)-[r:DELIVERED]->(p)
+SET r.deliveredQty = toInteger(row.DeliveredQty),
+    r.damagedQty = CASE row.DamagedQty WHEN '' THEN 0 ELSE toInteger(row.DamagedQty) END;
+
+/* Invoice -> PurchaseOrder, Supplier */
+LOAD CSV WITH HEADERS FROM 'file:///invoices.csv' AS row
+MATCH (inv:Invoice {InvoiceID: toInteger(row.InvoiceID)})
+OPTIONAL MATCH (po:PurchaseOrder {POID: CASE row.POID WHEN '' THEN null ELSE toInteger(row.POID) END})
+OPTIONAL MATCH (s:Supplier {SupplierID: CASE row.SupplierID WHEN '' THEN null ELSE toInteger(row.SupplierID) END})
+FOREACH (_ IN CASE WHEN po IS NULL THEN [] ELSE [1] END |
+  MERGE (inv)-[:INVOICE_FOR]->(po)
+)
+FOREACH (_ IN CASE WHEN s IS NULL THEN [] ELSE [1] END |
+  MERGE (inv)-[:INVOICE_FROM]->(s)
+);
+
+/* Payment -> Invoice */
+LOAD CSV WITH HEADERS FROM 'file:///payments.csv' AS row
+MATCH (pm:Payment {PaymentID: toInteger(row.PaymentID)})
+MATCH (inv:Invoice {InvoiceID: toInteger(row.InvoiceID)})
+MERGE (pm)-[:PAYMENT_FOR]->(inv);
+
+/* ------------------------------
+   4) Post-import checks (optional)
+   ------------------------------ */
+MATCH (s:Supplier) RETURN COUNT(s) AS suppliers;
+MATCH (p:Product) RETURN COUNT(p) AS products;
