@@ -1,0 +1,3 @@
+"POID","SupplierID","StoreID","OrderDate","ExpectedDate","Status","TotalAmount"
+"1001","1","1","2025-08-20","2025-08-23","Placed","315"
+"1002","2","2","2025-08-22","2025-08-26","Placed","148"

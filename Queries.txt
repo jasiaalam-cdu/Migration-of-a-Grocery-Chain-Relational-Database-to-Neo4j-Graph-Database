@@ -1,0 +1,172 @@
+//Query1
+
+// Find products below reorder threshold with supplier information
+MATCH (sl:StockLevel)-[:IN_STORE]->(store:Store)
+MATCH (sl)-[:OF_PRODUCT]->(p:Product)
+WHERE sl.quantity < sl.reorderThreshold
+MATCH (p)-[:SUPPLIED_BY]->(s:Supplier)
+RETURN store.name AS Store,
+       store.location AS Location,
+       p.name AS Product,
+       p.productId AS ProductID,
+       p.sku AS SKU,
+       sl.quantity AS CurrentStock,
+       sl.reorderThreshold AS ReorderThreshold,
+       (sl.reorderThreshold - sl.quantity) AS UnitsNeeded,
+       s.name AS Supplier,
+       s.email AS SupplierEmail,
+       s.phone AS SupplierPhone
+ORDER BY UnitsNeeded DESC, store.name
+
+
+//Query2
+
+// Analyze supplier invoices and payment status
+MATCH (i:Invoice)-[:FROM_SUPPLIER]->(s:Supplier)
+OPTIONAL MATCH (pay:Payment)-[:FOR_INVOICE]->(i)
+WITH s, i, pay,
+     CASE 
+       WHEN pay IS NOT NULL THEN 'Paid'
+       WHEN date(i.dueDate) < date() THEN 'Overdue'
+       ELSE 'Pending'
+     END AS PaymentStatus,
+     CASE 
+       WHEN pay IS NULL AND date(i.dueDate) < date() 
+       THEN duration.between(date(i.dueDate), date()).days
+       ELSE 0
+     END AS DaysOverdue
+RETURN s.name AS Supplier,
+       s.supplierId AS SupplierID,
+       s.contactName AS Contact,
+       s.email AS Email,
+       count(i) AS TotalInvoices,
+       sum(CASE WHEN PaymentStatus = 'Paid' THEN 1 ELSE 0 END) AS PaidInvoices,
+       sum(CASE WHEN PaymentStatus = 'Overdue' THEN 1 ELSE 0 END) AS OverdueInvoices,
+       sum(CASE WHEN PaymentStatus = 'Pending' THEN 1 ELSE 0 END) AS PendingInvoices,
+       round(sum(CASE WHEN PaymentStatus IN ['Overdue', 'Pending'] THEN i.amount ELSE 0 END), 2) AS TotalOwed,
+       round(max(DaysOverdue), 0) AS MaxDaysOverdue
+ORDER BY TotalOwed DESC, MaxDaysOverdue DESC
+
+//Query3
+
+// Evaluate supplier performance based on deliveries and PO fulfillment
+MATCH (po:PurchaseOrder)-[:PLACED_WITH_SUPPLIER]->(s:Supplier)
+OPTIONAL MATCH (d:Delivery)-[:FULFILLS_PURCHASE_ORDER]->(po)
+
+// Calculate delivery metrics
+WITH s, po, d,
+     CASE 
+       WHEN d.deliveryDate IS NOT NULL AND po.expectedDate IS NOT NULL
+       THEN duration.between(date(po.expectedDate), date(d.deliveryDate)).days
+       ELSE null
+     END AS DeliveryDelay,
+     CASE
+       WHEN d.status = 'Completed' THEN 1
+       ELSE 0
+     END AS IsCompleted,
+     CASE
+       WHEN d.deliveryDate IS NOT NULL AND po.expectedDate IS NOT NULL 
+            AND date(d.deliveryDate) <= date(po.expectedDate) 
+       THEN 1
+       ELSE 0
+     END AS IsOnTime
+
+WITH s,
+     count(DISTINCT po) AS TotalPurchaseOrders,
+     count(DISTINCT d) AS TotalDeliveries,
+     sum(IsCompleted) AS CompletedDeliveries,
+     sum(IsOnTime) AS OnTimeDeliveries,
+     avg(DeliveryDelay) AS AvgDeliveryDelay
+
+RETURN s.name AS Supplier,
+       s.supplierId AS SupplierID,
+       s.contactName AS Contact,
+       TotalPurchaseOrders,
+       TotalDeliveries,
+       CompletedDeliveries,
+       round(toFloat(TotalDeliveries) / CASE WHEN TotalPurchaseOrders = 0 THEN 1 ELSE TotalPurchaseOrders END * 100, 2) AS DeliveryRate,
+       round(toFloat(CompletedDeliveries) / CASE WHEN TotalDeliveries = 0 THEN 1 ELSE TotalDeliveries END * 100, 2) AS CompletionRate,
+       round(toFloat(OnTimeDeliveries) / CASE WHEN TotalDeliveries = 0 THEN 1 ELSE TotalDeliveries END * 100, 2) AS OnTimeRate,
+       round(AvgDeliveryDelay, 1) AS AvgDelayDays,
+       round((
+         (toFloat(TotalDeliveries) / CASE WHEN TotalPurchaseOrders = 0 THEN 1 ELSE TotalPurchaseOrders END * 0.3) +
+         (toFloat(CompletedDeliveries) / CASE WHEN TotalDeliveries = 0 THEN 1 ELSE TotalDeliveries END * 0.4) +
+         (toFloat(OnTimeDeliveries) / CASE WHEN TotalDeliveries = 0 THEN 1 ELSE TotalDeliveries END * 0.3)
+       ) * 100, 2) AS OverallScore
+ORDER BY OverallScore DESC
+
+
+//Query4
+
+
+// Analyze products needing reorder with supplier lead time and order history
+MATCH (sl:StockLevel)-[:OF_PRODUCT]->(p:Product)
+MATCH (sl)-[:IN_STORE]->(store:Store)
+WHERE sl.quantity <= sl.reorderThreshold
+
+// Get supplier information
+MATCH (p)-[:SUPPLIED_BY]->(s:Supplier)
+
+// Get supplier product details for lead time
+OPTIONAL MATCH (sp:SupplierProduct)-[:FOR_PRODUCT]->(p)
+OPTIONAL MATCH (sp)-[:HAS_SUPPLIER]->(s)
+
+// Get purchase order history for this supplier
+OPTIONAL MATCH (po:PurchaseOrder)-[:PLACED_WITH_SUPPLIER]->(s)
+OPTIONAL MATCH (po)-[:FOR_STORE]->(store)
+OPTIONAL MATCH (poi:PurchaseOrderItem)-[:BELONGS_TO_PURCHASE_ORDER]->(po)
+OPTIONAL MATCH (poi)-[:CONTAINS_PRODUCT]->(p)
+
+// Get delivery history
+OPTIONAL MATCH (d:Delivery)-[:FULFILLS_PURCHASE_ORDER]->(po)
+
+// Calculate metrics
+WITH store,
+     p,
+     sl,
+     s,
+     sp,
+     count(DISTINCT po) AS TotalOrders,
+     count(DISTINCT CASE WHEN d.status = 'Completed' THEN d END) AS CompletedDeliveries,
+     avg(sp.leadTimeDays) AS AvgLeadTime,
+     sum(poi.orderedQty) AS TotalPreviouslyOrdered
+
+// Calculate urgency score
+WITH store,
+     p,
+     sl,
+     s,
+     TotalOrders,
+     CompletedDeliveries,
+     AvgLeadTime,
+     TotalPreviouslyOrdered,
+     (sl.reorderThreshold - sl.quantity) AS StockShortage,
+     CASE 
+       WHEN TotalOrders > 0 
+       THEN toFloat(CompletedDeliveries) / TotalOrders * 100
+       ELSE 100.0 
+     END AS SupplierReliability,
+     CASE
+       WHEN AvgLeadTime IS NOT NULL AND AvgLeadTime > 0
+       THEN toFloat(sl.reorderThreshold - sl.quantity) / AvgLeadTime
+       ELSE toFloat(sl.reorderThreshold - sl.quantity)
+     END AS UrgencyScore
+
+RETURN store.name AS Store,
+       store.location AS Location,
+       p.name AS Product,
+       p.productId AS ProductID,
+       p.sku AS SKU,
+       sl.quantity AS CurrentStock,
+       sl.reorderThreshold AS ReorderThreshold,
+       StockShortage AS UnitsShort,
+       s.name AS Supplier,
+       s.email AS SupplierEmail,
+       round(AvgLeadTime, 1) AS LeadTimeDays,
+       TotalOrders AS PreviousOrders,
+       CompletedDeliveries,
+       round(SupplierReliability, 2) AS SupplierReliabilityPercent,
+       TotalPreviouslyOrdered AS PreviouslyOrderedQty,
+       round(UrgencyScore, 2) AS UrgencyScore
+ORDER BY UrgencyScore DESC, SupplierReliability DESC
+LIMIT 10

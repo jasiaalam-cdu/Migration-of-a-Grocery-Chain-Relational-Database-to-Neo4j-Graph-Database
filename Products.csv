@@ -1,0 +1,7 @@
+"ProductID","SKU","Name","CategoryID","DefaultSupplierID","CostPrice","RetailPrice","Unit","IsPerishable","ReorderThreshold"
+"1","PRD001","Gala Apples 1kg","1","1","3","4.5","bag","1","20"
+"2","PRD002","Bananas 1kg","1","1","2.2","3.5","bunch","1","25"
+"3","PRD101","Full Cream Milk 2L","2","2","2.1","3.2","bottle","1","15"
+"4","PRD102","Greek Yogurt 1kg","2","2","4.5","6.9","tub","1","10"
+"5","PRD201","Orange Juice 1L","3","1","1.2","2.5","carton","0","12"
+"6","PRD301","Dishwashing Liquid","4","1","1","2.2","bottle","0","8"

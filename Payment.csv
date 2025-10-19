@@ -1,0 +1,2 @@
+"PaymentID","InvoiceID","PaymentDate","Method","Amount","ConfirmationNumber"
+"1","9002","2025-08-30","Bank Transfer","80","BT-REF-12345"
