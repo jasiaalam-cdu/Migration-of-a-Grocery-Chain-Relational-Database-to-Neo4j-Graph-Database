@@ -1,0 +1,175 @@
+// =============================
+// Neo4j Import & Index Scripts
+// =============================
+// Run in Neo4j Browser AFTER placing CSVs into the Neo4j /import folder.
+// Adjust file names if your CSVs use different names/headers.
+
+// ---- Drop existing constraints (safe to ignore errors) ----
+CALL apoc.schema.assert({},{},true);
+
+// ---- Constraints / Indexes ----
+CREATE CONSTRAINT supplier_id IF NOT EXISTS FOR (n:Supplier) REQUIRE n.SupplierID IS UNIQUE;
+CREATE CONSTRAINT category_id IF NOT EXISTS FOR (n:Category) REQUIRE n.CategoryID IS UNIQUE;
+CREATE CONSTRAINT store_id IF NOT EXISTS FOR (n:Store) REQUIRE n.StoreID IS UNIQUE;
+CREATE CONSTRAINT product_id IF NOT EXISTS FOR (n:Product) REQUIRE n.ProductID IS UNIQUE;
+CREATE CONSTRAINT po_id IF NOT EXISTS FOR (n:PurchaseOrder) REQUIRE n.POID IS UNIQUE;
+CREATE CONSTRAINT delivery_id IF NOT EXISTS FOR (n:Delivery) REQUIRE n.DeliveryID IS UNIQUE;
+CREATE CONSTRAINT invoice_id IF NOT EXISTS FOR (n:Invoice) REQUIRE n.InvoiceID IS UNIQUE;
+CREATE CONSTRAINT payment_id IF NOT EXISTS FOR (n:Payment) REQUIRE n.PaymentID IS UNIQUE;
+
+// Optional helpful indexes
+CREATE INDEX product_sku IF NOT EXISTS FOR (n:Product) ON (n.sku);
+CREATE INDEX supplier_name IF NOT EXISTS FOR (n:Supplier) ON (n.name);
+CREATE INDEX store_name IF NOT EXISTS FOR (n:Store) ON (n.name);
+
+// =====================
+// NODE LOADS
+// =====================
+
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///suppliers.csv' AS row
+MERGE (s:Supplier {SupplierID: row.SupplierID})
+SET s.name = row.name,
+    s.abn = row.abn,
+    s.contactName = row.contactName,
+    s.phone = row.phone,
+    s.email = row.email,
+    s.contractTerms = row.contractTerms,
+    s.active = CASE WHEN toLower(row.active) IN ['1','true','yes','y'] THEN true ELSE false END;
+
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///categories.csv' AS row
+MERGE (c:Category {CategoryID: row.CategoryID})
+SET c.name = row.name;
+
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///stores.csv' AS row
+MERGE (st:Store {StoreID: row.StoreID})
+SET st.name = row.name,
+    st.location = row.location;
+
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///products.csv' AS row
+MERGE (p:Product {ProductID: row.ProductID})
+SET p.sku = row.sku,
+    p.name = row.name,
+    p.costPrice = toFloat(row.costPrice),
+    p.retailPrice = toFloat(row.retailPrice),
+    p.unit = row.unit,
+    p.isPerishable = CASE WHEN toLower(row.isPerishable) IN ['1','true','yes','y'] THEN true ELSE false END,
+    p.reorderThreshold = CASE WHEN row.reorderThreshold = '' THEN null ELSE toInteger(row.reorderThreshold) END;
+
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///purchase_orders.csv' AS row
+MERGE (po:PurchaseOrder {POID: row.POID})
+SET po.orderDate = date(row.orderDate),
+    po.expectedDate = CASE WHEN row.expectedDate <> '' THEN date(row.expectedDate) ELSE null END,
+    po.status = row.status,
+    po.totalAmount = CASE WHEN row.totalAmount = '' THEN null ELSE toFloat(row.totalAmount) END;
+
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///deliveries.csv' AS row
+MERGE (d:Delivery {DeliveryID: row.DeliveryID})
+SET d.deliveryDate = date(row.deliveryDate),
+    d.status = row.status,
+    d.notes = row.notes;
+
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///invoices.csv' AS row
+MERGE (i:Invoice {InvoiceID: row.InvoiceID})
+SET i.invoiceNumber = row.invoiceNumber,
+    i.invoiceDate = date(row.invoiceDate),
+    i.dueDate = CASE WHEN row.dueDate <> '' THEN date(row.dueDate) ELSE null END,
+    i.amount = toFloat(row.amount),
+    i.status = row.status;
+
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///payments.csv' AS row
+MERGE (pmt:Payment {PaymentID: row.PaymentID})
+SET pmt.paymentDate = date(row.paymentDate),
+    pmt.method = row.method,
+    pmt.amount = toFloat(row.amount),
+    pmt.confirmationNumber = row.confirmationNumber;
+
+// =====================
+// RELATIONSHIP LOADS
+// =====================
+
+// Product -> Category
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///product_categories.csv' AS row
+MATCH (p:Product {ProductID: row.ProductID})
+MATCH (c:Category {CategoryID: row.CategoryID})
+MERGE (p)-[:IN_CATEGORY]->(c);
+
+// Supplier -> Product (SUPPLIES)
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///supplier_products.csv' AS row
+MATCH (s:Supplier {SupplierID: row.SupplierID})
+MATCH (p:Product {ProductID: row.ProductID})
+MERGE (s)-[r:SUPPLIES]->(p)
+SET r.supplierSKU = row.supplierSKU,
+    r.leadTimeDays = CASE WHEN row.leadTimeDays = '' THEN null ELSE toInteger(row.leadTimeDays) END,
+    r.unitCost = CASE WHEN row.unitCost = '' THEN null ELSE toFloat(row.unitCost) END;
+
+// Store -> Product (HAS_STOCK with quantity, reorderThreshold override)
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///store_stock.csv' AS row
+MATCH (st:Store {StoreID: row.StoreID})
+MATCH (p:Product {ProductID: row.ProductID})
+MERGE (st)-[r:HAS_STOCK]->(p)
+SET r.quantity = toInteger(row.quantity),
+    r.reorderThreshold = CASE WHEN row.reorderThreshold = '' THEN null ELSE toInteger(row.reorderThreshold) END;
+
+// PurchaseOrder -> Supplier, Store
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///purchase_orders.csv' AS row
+MATCH (po:PurchaseOrder {POID: row.POID})
+MATCH (s:Supplier {SupplierID: row.SupplierID})
+MATCH (st:Store {StoreID: row.StoreID})
+MERGE (po)-[:FROM_SUPPLIER]->(s)
+MERGE (po)-[:TO_STORE]->(st);
+
+// PurchaseOrder -> Product (CONTAINS as line items)
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///po_items.csv' AS row
+MATCH (po:PurchaseOrder {POID: row.POID})
+MATCH (p:Product {ProductID: row.ProductID})
+MERGE (po)-[r:CONTAINS]->(p)
+SET r.orderedQty = toInteger(row.orderedQty),
+    r.unitCost = CASE WHEN row.unitCost = '' THEN null ELSE toFloat(row.unitCost) END;
+
+// Delivery -> PO and Product
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///delivery_links.csv' AS row
+MATCH (d:Delivery {DeliveryID: row.DeliveryID})
+MATCH (po:PurchaseOrder {POID: row.POID})
+MERGE (d)-[:FOR_PO]->(po);
+
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///delivery_items.csv' AS row
+MATCH (d:Delivery {DeliveryID: row.DeliveryID})
+MATCH (p:Product {ProductID: row.ProductID})
+MERGE (d)-[r:DELIVERED]->(p)
+SET r.deliveredQty = toInteger(row.deliveredQty),
+    r.damagedQty = CASE WHEN row.damagedQty = '' THEN 0 ELSE toInteger(row.damagedQty) END;
+
+// Invoice -> PO & Supplier
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///invoices.csv' AS row
+MATCH (i:Invoice {InvoiceID: row.InvoiceID})
+MATCH (po:PurchaseOrder {POID: row.POID})
+MATCH (s:Supplier {SupplierID: row.SupplierID})
+MERGE (i)-[:INVOICE_FOR]->(po)
+MERGE (i)-[:INVOICE_FROM]->(s);
+
+// Payment -> Invoice
+USING PERIODIC COMMIT 1000
+LOAD CSV WITH HEADERS FROM 'file:///payments.csv' AS row
+MATCH (pmt:Payment {PaymentID: row.PaymentID})
+MATCH (i:Invoice {InvoiceID: row.InvoiceID})
+MERGE (pmt)-[:PAYMENT_FOR]->(i);
+
+// ---- Quick sanity counts ----
+MATCH (n) RETURN labels(n) AS label, count(*) AS cnt ORDER BY cnt DESC;
+MATCH ()-[r]->() RETURN type(r) AS rel, count(*) AS cnt ORDER BY cnt DESC;

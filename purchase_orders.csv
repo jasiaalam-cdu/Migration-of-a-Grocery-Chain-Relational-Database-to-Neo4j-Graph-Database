@@ -1,0 +1,2 @@
+POID,SupplierID,StoreID,orderDate,expectedDate,status,totalAmount
+PO100,S1,ST1,2025-10-01,2025-10-04,OPEN,110.0

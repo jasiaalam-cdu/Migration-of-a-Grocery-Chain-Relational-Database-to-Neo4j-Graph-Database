@@ -1,0 +1,66 @@
+LOAD CSV WITH HEADERS FROM 'https://raw.githubusercontent.com/Orchid-05/Neo4j-CSVs/main/Product.csv' AS row
+WITH row
+WHERE row.ProductID IS NOT NULL
+MERGE (p:Product {productID: row.ProductID})
+ON CREATE SET
+  p.name = row.Name,
+  p.categoryID = row.CategoryID,
+  p.defaultSupplierID = row.DefaultSupplierID,
+  p.costPrice = toFloat(row.CostPrice),
+  p.retailPrice = toFloat(row.RetailPrice),
+  p.unit = row.Unit,
+  p.isPerishable = (row.IsPerishable = '1'),
+  p.reorderThreshold = toInteger(row.ReorderThreshold);
+
+
+
+
+CALL gds.graph.project(
+  'productSimilarityGraph',
+  ['Product', 'Supplier'],
+  {SUPPLIED_BY: {type: 'SUPPLIED_BY', orientation: 'UNDIRECTED'}}
+
+
+
+
+
+CALL gds.nodeSimilarity.stream('productSimilarityGraph')
+YIELD node1, node2, similarity
+RETURN gds.util.asNode(node1).name AS Product1,
+       gds.util.asNode(node2).name AS Product2,
+   	similarity
+ORDER BY similarity DESC
+LIMIT 10;
+
+
+
+is used to persist these relationships:
+CALL gds.nodeSimilarity.write('productSimilarityGraph', {
+  similarityCutoff: 0.5,
+  writeRelationshipType: 'SIMILAR_TO',
+  writeProperty: 'score'
+});
+
+
+
+// 2.1 Product → Category
+MATCH (p:Product), (c:Category)
+WHERE p.categoryID = c.categoryID
+MERGE (p)-[:BELONGS_TO]->(c);
+
+// 2.2 Product → Supplier
+MATCH (p:Product), (s:Supplier)
+WHERE p.defaultSupplierID = s.supplierID
+MERGE (p)-[:SUPPLIED_BY]->(s);
+
+
+MATCH (p:Product)
+RETURN p.name AS Product, p.categoryID AS Category, p.defaultSupplierID AS Supplier
+LIMIT 10;
+
+CALL db.relationshipTypes();
+
+
+
+
+

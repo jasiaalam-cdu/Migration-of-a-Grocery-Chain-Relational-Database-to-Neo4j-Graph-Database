@@ -1,0 +1,2 @@
+SupplierID,ProductID,supplierSKU,leadTimeDays,unitCost
+S1,P1,APL-001-SUP,3,1.1

@@ -1,0 +1,2 @@
+PaymentID,InvoiceID,paymentDate,method,amount,confirmationNumber
+PM400,INV300,2025-10-05,Card,88.0,CONF-888

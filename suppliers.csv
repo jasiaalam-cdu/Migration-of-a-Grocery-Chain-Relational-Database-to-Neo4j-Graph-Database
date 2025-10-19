@@ -1,0 +1,2 @@
+SupplierID,name,abn,contactName,phone,email,contractTerms,active
+S1,FreshCo,123456789,Alex Lee,0412000000,alex@freshco.com,NET30,true

@@ -1,0 +1,2 @@
+ProductID,sku,name,costPrice,retailPrice,unit,isPerishable,reorderThreshold
+P1,APL-001,Apple Royal Gala,1.2,2.5,kg,true,20

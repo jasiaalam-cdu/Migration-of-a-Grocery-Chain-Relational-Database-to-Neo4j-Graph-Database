@@ -1,0 +1,2 @@
+InvoiceID,POID,SupplierID,invoiceNumber,invoiceDate,dueDate,amount,status
+INV300,PO100,S1,INV-300,2025-10-03,2025-10-17,88.0,UNPAID

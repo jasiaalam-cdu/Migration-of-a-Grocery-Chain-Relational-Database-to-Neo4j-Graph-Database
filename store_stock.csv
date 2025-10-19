@@ -1,0 +1,2 @@
+StoreID,ProductID,quantity,reorderThreshold
+ST1,P1,10,15

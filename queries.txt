@@ -1,0 +1,118 @@
+// =====================================
+// Task 3: Graph Database Queries (4 use cases)
+// + GDS Centrality & Similarity scripts
+// =====================================
+
+// ---------- Use case 1: Low-stock reorder alert ----------
+// Scenario: Identify products below reorder threshold at each store and list candidate suppliers.
+MATCH (st:Store)-[hs:HAS_STOCK]->(p:Product)
+WHERE hs.quantity IS NOT NULL AND p.reorderThreshold IS NOT NULL AND hs.quantity < COALESCE(hs.reorderThreshold, p.reorderThreshold)
+OPTIONAL MATCH (s:Supplier)-[sp:SUPPLIES]->(p)
+RETURN st.name AS store, p.sku AS sku, p.name AS product,
+       hs.quantity AS qty, COALESCE(hs.reorderThreshold, p.reorderThreshold) AS threshold,
+       collect(DISTINCT s.name) AS suppliers
+ORDER BY store, product;
+
+// ---------- Use case 2: Supplier delivery performance ----------
+// Scenario: For each supplier, compute delivery-on-time rate (deliveryDate <= expectedDate of the linked PO).
+MATCH (d:Delivery)-[:FOR_PO]->(po:PurchaseOrder)-[:FROM_SUPPLIER]->(s:Supplier)
+WITH s, d, po, CASE WHEN d.deliveryDate <= po.expectedDate THEN 1 ELSE 0 END AS ontime
+RETURN s.name AS supplier,
+       round(100.0 * avg(ontime), 2) AS on_time_pct,
+       count(*) AS deliveries
+ORDER BY on_time_pct DESC, deliveries DESC;
+
+// ---------- Use case 3: Outstanding invoice aging ----------
+// Scenario: Current aging buckets per supplier for unpaid invoices.
+WITH date() AS today
+MATCH (i:Invoice {status: 'UNPAID'})-[:INVOICE_FROM]->(s:Supplier)
+WITH s, i, duration.inDays(i.invoiceDate, date()).days AS ageDays
+RETURN s.name AS supplier,
+       sum(CASE WHEN ageDays <= 30 THEN i.amount ELSE 0 END) AS due_0_30,
+       sum(CASE WHEN ageDays > 30 AND ageDays <= 60 THEN i.amount ELSE 0 END) AS due_31_60,
+       sum(CASE WHEN ageDays > 60 THEN i.amount ELSE 0 END) AS due_60_plus,
+       sum(i.amount) AS total_due
+ORDER BY total_due DESC;
+
+// ---------- Use case 4: PO fill-rate by product ----------
+// Scenario: Compare ordered quantities vs delivered quantities to spot under-fulfilled items.
+MATCH (po:PurchaseOrder)-[c:CONTAINS]->(p:Product)
+OPTIONAL MATCH (d:Delivery)-[:FOR_PO]->(po)
+OPTIONAL MATCH (d)-[del:DELIVERED]->(p)
+WITH po, p, sum(c.orderedQty) AS ordered, sum(del.deliveredQty) AS delivered
+RETURN po.POID AS POID, p.sku AS sku, p.name AS product,
+       ordered, COALESCE(delivered,0) AS delivered,
+       round(100.0 * COALESCE(delivered,0) / CASE WHEN ordered = 0 THEN 1 ELSE ordered END,2) AS fill_rate_pct
+ORDER BY fill_rate_pct ASC, ordered DESC;
+
+// =====================================
+// Task 4: Centrality (GDS)
+// =====================================
+
+// ---- PageRank: influence across suppliers/products/stores ----
+CALL gds.graph.project(
+  'opsGraph',
+  ['Supplier','Product','Store'],
+  {
+    SUPPLIES:  {orientation: 'UNDIRECTED'},
+    HAS_STOCK: {orientation: 'UNDIRECTED'},
+    CONTAINS:  {orientation: 'UNDIRECTED'}
+  }
+);
+
+CALL gds.pageRank.stream('opsGraph')
+YIELD nodeId, score
+RETURN gds.util.asNode(nodeId).name AS entity,
+       labels(gds.util.asNode(nodeId)) AS labels,
+       score
+ORDER BY score DESC
+LIMIT 25;
+
+CALL gds.graph.drop('opsGraph');
+
+// ---- Betweenness: bridges / single points of failure ----
+CALL gds.graph.project(
+  'opsGraphBC',
+  ['Supplier','Product','Store'],
+  {
+    SUPPLIES:  {orientation: 'UNDIRECTED'},
+    HAS_STOCK: {orientation: 'UNDIRECTED'},
+    CONTAINS:  {orientation: 'UNDIRECTED'}
+  }
+);
+
+CALL gds.betweenness.stream('opsGraphBC', {normalized: true})
+YIELD nodeId, score
+RETURN gds.util.asNode(nodeId).name AS entity,
+       labels(gds.util.asNode(nodeId)) AS labels,
+       round(score,5) AS betweenness
+ORDER BY betweenness DESC
+LIMIT 25;
+
+CALL gds.graph.drop('opsGraphBC');
+
+// =====================================
+// Task 5: Similarity (GDS)
+// =====================================
+// Goal: Recommend alternative suppliers based on overlapping products supplied.
+// Builds a bipartite Supplier-Product projection and runs node similarity on Suppliers only.
+
+CALL gds.graph.project(
+  'supProd',
+  {
+    Supplier: { label: 'Supplier' },
+    Product:  { label: 'Product' }
+  },
+  {
+    SUPPLIES: { type: 'SUPPLIES', orientation: 'UNDIRECTED' }
+  }
+);
+
+CALL gds.nodeSimilarity.stream('supProd', { topK: 5, degreeCutoff: 1, similarityCutoff: 0.1})
+YIELD node1, node2, similarity
+WITH gds.util.asNode(node1) AS s1, gds.util.asNode(node2) AS s2, similarity
+WHERE 'Supplier' IN labels(s1) AND 'Supplier' IN labels(s2)
+RETURN s1.name AS supplier, s2.name AS similar_supplier, round(similarity,3) AS similarity
+ORDER BY supplier, similarity DESC;
+
+CALL gds.graph.drop('supProd');
